@@ -105,14 +105,20 @@ async def download_video(request: DownloadRequest, background_tasks: BackgroundT
         
     except Exception as e:
         logger.error(f"Download error: {str(e)}")
-        if "Video unavailable" in str(e):
-            raise HTTPException(status_code=404, detail="Video not found or unavailable")
-        elif "age-restricted" in str(e).lower():
-            raise HTTPException(status_code=400, detail="Cannot download age-restricted videos")
-        elif "private" in str(e).lower():
-            raise HTTPException(status_code=400, detail="Cannot download private videos")
+        error_msg = str(e)
+        
+        if "YouTube is currently blocking" in error_msg:
+            raise HTTPException(status_code=429, detail=error_msg)
+        elif "Video unavailable" in error_msg or "video is unavailable" in error_msg:
+            raise HTTPException(status_code=404, detail=error_msg)
+        elif "age-restricted" in error_msg.lower():
+            raise HTTPException(status_code=400, detail=error_msg)
+        elif "private" in error_msg.lower():
+            raise HTTPException(status_code=400, detail=error_msg)
+        elif "copyright" in error_msg.lower():
+            raise HTTPException(status_code=400, detail=error_msg)
         else:
-            raise HTTPException(status_code=500, detail="Failed to process video")
+            raise HTTPException(status_code=500, detail="Failed to process video. Please try again later.")
 
 @app.get("/files/{filename}")
 async def download_file(filename: str):
