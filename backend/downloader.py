@@ -6,6 +6,8 @@ from typing import Dict, Optional
 import yt_dlp
 import ffmpeg
 import re
+import random
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,16 @@ class VideoDownloader:
             sanitized = sanitized[:100]
         return sanitized
     
+    def _get_user_agents(self):
+        """Return a list of common user agents to rotate"""
+        return [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0'
+        ]
+    
     async def download_video(self, url: str) -> Dict:
         """
         Download YouTube video and convert to HEVC format
@@ -47,18 +59,51 @@ class VideoDownloader:
         temp_audio_path = None
         
         try:
-            # Configure yt-dlp options
+            # Add random delay to avoid rate limiting
+            await asyncio.sleep(random.uniform(0.5, 2.0))
+            
+            # Configure yt-dlp options with anti-bot measures
+            user_agents = self._get_user_agents()
+            selected_ua = random.choice(user_agents)
+            
             ydl_opts = {
                 'format': 'best[height<=720]/best',
                 'noplaylist': True,
                 'extract_flat': False,
                 'quiet': True,
                 'no_warnings': True,
+                'user_agent': selected_ua,
+                'referer': 'https://www.youtube.com/',
+                'headers': {
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                },
+                'extractor_args': {
+                    'youtube': {
+                        'skip': ['hls', 'dash'],
+                        'player_client': ['android', 'web']
+                    }
+                },
+                'http_chunk_size': 10485760,  # 10MB chunks
             }
             
             # Extract video info
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                try:
+                    info = ydl.extract_info(url, download=False)
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if 'bot' in error_msg or 'sign in' in error_msg:
+                        # Try with different extractor args
+                        ydl_opts['extractor_args']['youtube']['player_client'] = ['android']
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl_retry:
+                            info = ydl_retry.extract_info(url, download=False)
+                    else:
+                        raise e
                 
                 if not info:
                     raise Exception("Failed to extract video information")
@@ -82,7 +127,15 @@ class VideoDownloader:
                     'noplaylist': True,
                     'quiet': True,
                     'no_warnings': True,
+                    'user_agent': selected_ua,
+                    'referer': 'https://www.youtube.com/',
+                    'headers': ydl_opts['headers'],
+                    'extractor_args': ydl_opts['extractor_args'],
+                    'http_chunk_size': 10485760,
                 }
+                
+                # Add another small delay before download
+                await asyncio.sleep(random.uniform(1.0, 3.0))
                 
                 with yt_dlp.YoutubeDL(ydl_opts_download) as ydl:
                     ydl.download([url])
@@ -131,8 +184,22 @@ class VideoDownloader:
                     except:
                         pass
             
-            logger.error(f"Download failed: {str(e)}")
-            raise e
+            error_msg = str(e)
+            logger.error(f"Download failed: {error_msg}")
+            
+            # Provide more specific error messages
+            if 'bot' in error_msg.lower() or 'sign in' in error_msg.lower():
+                raise Exception("YouTube is currently blocking automated requests. Please try again in a few minutes or try a different video.")
+            elif 'video unavailable' in error_msg.lower():
+                raise Exception("This video is unavailable or has been removed.")
+            elif 'private' in error_msg.lower():
+                raise Exception("This video is private and cannot be downloaded.")
+            elif 'age' in error_msg.lower() and 'restricted' in error_msg.lower():
+                raise Exception("This video is age-restricted and cannot be downloaded.")
+            elif 'copyright' in error_msg.lower():
+                raise Exception("This video is protected by copyright and cannot be downloaded.")
+            else:
+                raise Exception(f"Download failed: {error_msg}")
     
     async def _convert_to_hevc(self, input_path: str, output_path: str):
         """Convert video to HEVC format using FFmpeg"""
